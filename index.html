@@ -2,26 +2,23 @@
 <html>
 <head>
   <meta charset="utf-8"/>
-  <title>360 Capture Web</title>
-  <style>
-    body { font-family: Arial; display:flex; flex-direction:column; align-items:center; gap:8px; padding:12px; }
-    video { width: 320px; height: 240px; background:#000; }
-    canvas { display:none; }
-    #guide { width:120px; height:120px; border-radius:50%; border:6px solid #ccc; display:flex; align-items:center; justify-content:center; font-weight:bold; }
-    #guide.ok { border-color:green; color:green; }
-    #thumbs img { width:80px; margin:4px; }
-  </style>
+  <title>360 Capture Web - Front Only</title>
+  <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <h3>Capture 360 (prototype)</h3>
+  <h3>Capture 360 (Front Only)</h3>
   <video id="video" autoplay playsinline></video>
   <div id="guide">OK</div>
   <div>
     <button id="snap">Prendre photo</button>
-    <button id="upload">Uploader et assembler</button>
+    <button id="stitch">Assembler Panorama</button>
   </div>
   <div id="thumbs"></div>
-  <canvas id="snapCanvas" width="1280" height="720"></canvas>
+  <canvas id="snapCanvas" width="640" height="480"></canvas>
+  <canvas id="canvasResult"></canvas>
+
+  <!-- OpenCV.js -->
+  <script async src="https://docs.opencv.org/4.x/opencv.js" type="text/javascript"></script>
 
 <script>
 const video = document.getElementById('video');
@@ -29,22 +26,22 @@ const canvas = document.getElementById('snapCanvas');
 const ctx = canvas.getContext('2d');
 const snaps = [];
 const thumbs = document.getElementById('thumbs');
+const resultCanvas = document.getElementById('canvasResult');
 
-// démarrer caméra
+// start camera
 async function startCam(){
-  try{
+  try {
     const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio:false });
     video.srcObject = stream;
-  }catch(e){
+  } catch(e) {
     alert("Impossible d'accéder à la caméra: " + e.message);
   }
 }
 startCam();
 
-// guidage basique via DeviceOrientation (si disponible)
+// guidage simple
 const guide = document.getElementById('guide');
 window.addEventListener('deviceorientation', (ev) => {
-  // ev.alpha, ev.beta, ev.gamma -> heuristique simple: rendre OK si l'angle beta proche de 0 (vertical) et gamma proche 0 (horizontal)
   const b = ev.beta || 0;
   const g = ev.gamma || 0;
   if (Math.abs(b) < 30 && Math.abs(g) < 30) {
@@ -56,39 +53,75 @@ window.addEventListener('deviceorientation', (ev) => {
   }
 });
 
+// redimensionnement simple pour éviter les images trop grandes
+async function resizeBlob(blob, maxSize=1024){
+  return new Promise(resolve=>{
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(maxSize/img.width, maxSize/img.height,1);
+      canvas.width = img.width*scale;
+      canvas.height = img.height*scale;
+      ctx.drawImage(img,0,0,canvas.width,canvas.height);
+      canvas.toBlob(resolve,'image/jpeg',0.9);
+    };
+    img.src = URL.createObjectURL(blob);
+  });
+}
+
 // capture
-document.getElementById('snap').addEventListener('click', () => {
-  // on prend image pleine résolution si possible
-  const w = video.videoWidth || 1280;
-  const h = video.videoHeight || 720;
+document.getElementById('snap').addEventListener('click', async () => {
+  const w = video.videoWidth || 640;
+  const h = video.videoHeight || 480;
   canvas.width = w;
   canvas.height = h;
   ctx.drawImage(video, 0, 0, w, h);
-  canvas.toBlob(blob => {
-    snaps.push(blob);
+  canvas.toBlob(async blob=>{
+    const resized = await resizeBlob(blob);
+    snaps.push(resized);
     const img = document.createElement('img');
-    img.src = URL.createObjectURL(blob);
+    img.src = URL.createObjectURL(resized);
     thumbs.appendChild(img);
-  }, 'image/jpeg', 0.9);
+  },'image/jpeg',0.9);
 });
 
-// upload
-document.getElementById('upload').addEventListener('click', async () => {
-  if (snaps.length < 2) return alert("Prends au moins 2 photos");
-  const fd = new FormData();
-  snaps.forEach((b, i) => fd.append('files', b, `snap${i}.jpg`));
+// stitching front-only avec OpenCV.js
+document.getElementById('stitch').addEventListener('click', async () => {
+  if (snaps.length < 2) { alert("Prends au moins 2 photos"); return; }
+
+  // attendre que OpenCV soit prêt
+  if (typeof cv === 'undefined' || !cv.Mat) {
+    alert("OpenCV.js pas encore chargé, attends quelques secondes.");
+    return;
+  }
+
+  let mats = [];
+  for (let blob of snaps) {
+    const img = await createImageBitmap(blob);
+    canvas.width = img.width;
+    canvas.height = img.height;
+    ctx.drawImage(img,0,0);
+    let mat = cv.imread(canvas);
+    mats.push(mat);
+  }
+
   try {
-    const res = await fetch('https://pano-backend.onrender.com/stitch', { method:'POST', body: fd });
-    if (!res.ok) {
-      const txt = await res.text();
-      throw new Error(txt || res.statusText);
+    let stitcher = new cv.Stitcher();
+    let pano = new cv.Mat();
+    let status = stitcher.stitch(mats, pano);
+    if (status !== cv.Stitcher_OK) {
+      alert("Stitching échoué : " + status);
+      mats.forEach(m=>m.delete());
+      pano.delete();
+      return;
     }
-    const blob = await res.blob();
-    // afficher résultat dans un nouvel onglet (ou l'intégrer dans viewer)
-    const url = URL.createObjectURL(blob);
-    window.open(url, '_blank');
-  } catch(err) {
-    alert("Erreur: " + err.message);
+
+    cv.imshow(resultCanvas, pano);
+
+    mats.forEach(m=>m.delete());
+    pano.delete();
+  } catch(e) {
+    console.error(e);
+    alert("Erreur stitching : " + e.message);
   }
 });
 </script>

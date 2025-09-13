@@ -78,7 +78,7 @@ document.getElementById('upload').addEventListener('click', async () => {
   const fd = new FormData();
   snaps.forEach((b, i) => fd.append('files', b, `snap${i}.jpg`));
   try {
-    const res = await fetch('http://localhost:8000/stitch', { method:'POST', body: fd });
+    const res = await fetch('https://pano-backend.onrender.com/stitch', { method:'POST', body: fd });
     if (!res.ok) {
       const txt = await res.text();
       throw new Error(txt || res.statusText);

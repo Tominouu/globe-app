@@ -1,0 +1,96 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>360 Capture Web</title>
+  <style>
+    body { font-family: Arial; display:flex; flex-direction:column; align-items:center; gap:8px; padding:12px; }
+    video { width: 320px; height: 240px; background:#000; }
+    canvas { display:none; }
+    #guide { width:120px; height:120px; border-radius:50%; border:6px solid #ccc; display:flex; align-items:center; justify-content:center; font-weight:bold; }
+    #guide.ok { border-color:green; color:green; }
+    #thumbs img { width:80px; margin:4px; }
+  </style>
+</head>
+<body>
+  <h3>Capture 360 (prototype)</h3>
+  <video id="video" autoplay playsinline></video>
+  <div id="guide">OK</div>
+  <div>
+    <button id="snap">Prendre photo</button>
+    <button id="upload">Uploader et assembler</button>
+  </div>
+  <div id="thumbs"></div>
+  <canvas id="snapCanvas" width="1280" height="720"></canvas>
+
+<script>
+const video = document.getElementById('video');
+const canvas = document.getElementById('snapCanvas');
+const ctx = canvas.getContext('2d');
+const snaps = [];
+const thumbs = document.getElementById('thumbs');
+
+// démarrer caméra
+async function startCam(){
+  try{
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio:false });
+    video.srcObject = stream;
+  }catch(e){
+    alert("Impossible d'accéder à la caméra: " + e.message);
+  }
+}
+startCam();
+
+// guidage basique via DeviceOrientation (si disponible)
+const guide = document.getElementById('guide');
+window.addEventListener('deviceorientation', (ev) => {
+  // ev.alpha, ev.beta, ev.gamma -> heuristique simple: rendre OK si l'angle beta proche de 0 (vertical) et gamma proche 0 (horizontal)
+  const b = ev.beta || 0;
+  const g = ev.gamma || 0;
+  if (Math.abs(b) < 30 && Math.abs(g) < 30) {
+    guide.classList.add('ok');
+    guide.textContent = 'OK';
+  } else {
+    guide.classList.remove('ok');
+    guide.textContent = 'TILT';
+  }
+});
+
+// capture
+document.getElementById('snap').addEventListener('click', () => {
+  // on prend image pleine résolution si possible
+  const w = video.videoWidth || 1280;
+  const h = video.videoHeight || 720;
+  canvas.width = w;
+  canvas.height = h;
+  ctx.drawImage(video, 0, 0, w, h);
+  canvas.toBlob(blob => {
+    snaps.push(blob);
+    const img = document.createElement('img');
+    img.src = URL.createObjectURL(blob);
+    thumbs.appendChild(img);
+  }, 'image/jpeg', 0.9);
+});
+
+// upload
+document.getElementById('upload').addEventListener('click', async () => {
+  if (snaps.length < 2) return alert("Prends au moins 2 photos");
+  const fd = new FormData();
+  snaps.forEach((b, i) => fd.append('files', b, `snap${i}.jpg`));
+  try {
+    const res = await fetch('http://localhost:8000/stitch', { method:'POST', body: fd });
+    if (!res.ok) {
+      const txt = await res.text();
+      throw new Error(txt || res.statusText);
+    }
+    const blob = await res.blob();
+    // afficher résultat dans un nouvel onglet (ou l'intégrer dans viewer)
+    const url = URL.createObjectURL(blob);
+    window.open(url, '_blank');
+  } catch(err) {
+    alert("Erreur: " + err.message);
+  }
+});
+</script>
+</body>
+</html>
